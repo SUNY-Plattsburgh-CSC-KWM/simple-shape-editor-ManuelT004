@@ -6,9 +6,362 @@
 </head>
 <body>
     <svg style="width: 1000px; height: 1000px;"></svg>
-    <script>
+        <script>
+        (function(){
+            const SVG_NS = 'http://www.w3.org/2000/svg';
+            const svg = document.querySelector('svg');
+            svg.setAttribute('viewBox','0 0 1000 1000');
 
-      
-    </script>
+            // Data structures
+            const shapes = []; // dynamic shapes
+            const commands = []; // static command UI entries {id, el, bbox, name}
+            let nextId = 1;
+
+            // State machine
+            // states: idle, creating-rect, creating-circle, select-to-move, select-to-delete, placing
+            let state = 'idle';
+            let selectedIndex = -1; // index in shapes when moving
+
+            // Message area
+            const messageText = createText(10, 22, 'Idle - select a command');
+            messageText.setAttribute('id','message');
+            messageText.setAttribute('font-size','16');
+            messageText.setAttribute('font-family','Arial, sans-serif');
+
+            // Create static command buttons and shape-type buttons
+            const cmdY = 40;
+            const cmdW = 90, cmdH = 36;
+
+            const cmdCreate = makeCommand(10, cmdY, cmdW, cmdH, 'Create');
+            const cmdMove   = makeCommand(110, cmdY, cmdW, cmdH, 'Move');
+            const cmdDelete = makeCommand(210, cmdY, cmdW, cmdH, 'Delete');
+
+            // Shape type buttons (initially hidden)
+            const typeRect = makeCommand(320, cmdY, cmdW, cmdH, 'Rectangle');
+            const typeCircle = makeCommand(420, cmdY, cmdW, cmdH, 'Circle');
+            setVisible(typeRect.el, false);
+            setVisible(typeCircle.el, false);
+
+            // Register commands in array
+            commands.push({name:'create', el: cmdCreate.el});
+            commands.push({name:'move', el: cmdMove.el});
+            commands.push({name:'delete', el: cmdDelete.el});
+            commands.push({name:'rect-type', el: typeRect.el});
+            commands.push({name:'circle-type', el: typeCircle.el});
+
+            // Keep bboxes updated
+            updateCommandBBoxes();
+
+            // Event handling
+            svg.addEventListener('mousedown', dispatchEvent);
+
+            // Utility functions
+            function setMessage(s){
+                messageText.textContent = s;
+            }
+
+            function createText(x,y,txt){
+                const t = document.createElementNS(SVG_NS,'text');
+                t.setAttribute('x',x);
+                t.setAttribute('y',y);
+                t.setAttribute('fill','#000');
+                t.textContent = txt;
+                svg.appendChild(t);
+                return t;
+            }
+
+            function makeCommand(x,y,w,h,label){
+                const g = document.createElementNS(SVG_NS,'g');
+                const r = document.createElementNS(SVG_NS,'rect');
+                r.setAttribute('x', x);
+                r.setAttribute('y', y);
+                r.setAttribute('width', w);
+                r.setAttribute('height', h);
+                r.setAttribute('rx',6);
+                r.setAttribute('ry',6);
+                r.setAttribute('fill','#ddd');
+                r.setAttribute('stroke','#333');
+                r.setAttribute('stroke-width','1');
+                const t = document.createElementNS(SVG_NS,'text');
+                t.setAttribute('x', x + 10);
+                t.setAttribute('y', y + Math.round(h/2) + 5);
+                t.setAttribute('font-family','Arial, sans-serif');
+                t.setAttribute('font-size','14');
+                t.setAttribute('fill','#000');
+                t.textContent = label;
+                g.appendChild(r);
+                g.appendChild(t);
+                svg.appendChild(g);
+                g.style.cursor = 'pointer';
+                return {el:g, rect:r, text:t};
+            }
+
+            function setVisible(el, v){
+                el.style.display = v ? '' : 'none';
+            }
+
+            function updateCommandBBoxes(){
+                for(const cmd of commands){
+                    const bbox = cmd.el.getBBox();
+                    cmd.bbox = bbox; // {x,y,width,height}
+                }
+            }
+
+            function getMousePoint(evt){
+                const pt = svg.createSVGPoint();
+                pt.x = evt.clientX; pt.y = evt.clientY;
+                const ctm = svg.getScreenCTM().inverse();
+                const p = pt.matrixTransform(ctm);
+                return {x: p.x, y: p.y};
+            }
+
+            function hitTestCommand(x,y){
+                // prefer shape-type commands last so they are checked too
+                for(const cmd of commands){
+                    if(!cmd.bbox) continue;
+                    if(x >= cmd.bbox.x && x <= cmd.bbox.x + cmd.bbox.width &&
+                         y >= cmd.bbox.y && y <= cmd.bbox.y + cmd.bbox.height){
+                        return cmd;
+                    }
+                }
+                return null;
+            }
+
+            function hitTestShape(x,y){
+                // topmost first
+                for(let i = shapes.length - 1; i >= 0; i--){
+                    const s = shapes[i];
+                    if(s.type === 'rect'){
+                        if(x >= s.x && x <= s.x + s.width && y >= s.y && y <= s.y + s.height) return i;
+                    } else if(s.type === 'circle'){
+                        const dx = x - s.cx, dy = y - s.cy;
+                        if(Math.sqrt(dx*dx + dy*dy) <= s.r) return i;
+                    }
+                }
+                return -1;
+            }
+
+            function blinkShape(index){
+                const s = shapes[index];
+                if(!s) return;
+                if(s.blinkId) return; // already blinking
+                const el = s.el;
+                const orig = s.fill;
+                let on = true;
+                s.blinkId = setInterval(()=>{
+                    on = !on;
+                    if(s.type === 'rect') el.setAttribute('fill', on ? 'transparent' : orig);
+                    else if(s.type === 'circle') el.setAttribute('fill', on ? 'transparent' : orig);
+                }, 300);
+            }
+
+            function stopBlink(index){
+                const s = shapes[index];
+                if(!s) return;
+                if(s.blinkId){
+                    clearInterval(s.blinkId);
+                    s.blinkId = null;
+                    s.el.setAttribute('fill', s.fill);
+                }
+            }
+
+            function createRectangleAt(x,y){
+                const w = 90, h = 60;
+                const rx = x - w/2, ry = y - h/2;
+                const rect = document.createElementNS(SVG_NS,'rect');
+                rect.setAttribute('x', rx);
+                rect.setAttribute('y', ry);
+                rect.setAttribute('width', w);
+                rect.setAttribute('height', h);
+                rect.setAttribute('rx',6);
+                rect.setAttribute('ry',6);
+                const fill = randomColor();
+                rect.setAttribute('fill', fill);
+                rect.setAttribute('stroke','#333');
+                rect.setAttribute('stroke-width','1');
+                rect.style.cursor = 'pointer';
+                svg.appendChild(rect);
+                const obj = {id: 'id' + (nextId++), type:'rect', x:rx, y:ry, width:w, height:h, fill:fill, el:rect, blinkId:null};
+                shapes.push(obj);
+                return obj;
+            }
+
+            function createCircleAt(x,y){
+                const r = 36;
+                const c = document.createElementNS(SVG_NS,'circle');
+                c.setAttribute('cx', x);
+                c.setAttribute('cy', y);
+                c.setAttribute('r', r);
+                const fill = randomColor();
+                c.setAttribute('fill', fill);
+                c.setAttribute('stroke','#333');
+                c.setAttribute('stroke-width','1');
+                c.style.cursor = 'pointer';
+                svg.appendChild(c);
+                const obj = {id:'id' + (nextId++), type:'circle', cx:x, cy:y, r:r, fill:fill, el:c, blinkId:null};
+                shapes.push(obj);
+                return obj;
+            }
+
+            function moveShapeTo(index, x, y){
+                const s = shapes[index];
+                if(!s) return;
+                if(s.type === 'rect'){
+                    s.x = x - s.width/2;
+                    s.y = y - s.height/2;
+                    s.el.setAttribute('x', s.x);
+                    s.el.setAttribute('y', s.y);
+                } else if(s.type === 'circle'){
+                    s.cx = x; s.cy = y;
+                    s.el.setAttribute('cx', s.cx);
+                    s.el.setAttribute('cy', s.cy);
+                }
+            }
+
+            function deleteShape(index){
+                const s = shapes[index];
+                if(!s) return;
+                if(s.blinkId) clearInterval(s.blinkId);
+                svg.removeChild(s.el);
+                shapes.splice(index,1);
+            }
+
+            function randomColor(){
+                const palette = ['#ff9999','#99ccff','#99ff99','#ffcc99','#d7bde2','#f7dc6f'];
+                return palette[Math.floor(Math.random()*palette.length)];
+            }
+
+            // Dispatcher: handles clicks and routes based on state
+            function dispatchEvent(evt){
+                const p = getMousePoint(evt);
+                updateCommandBBoxes();
+                const cmd = hitTestCommand(p.x,p.y);
+                // If click on a visible command
+                if(cmd){
+                    handleCommandClick(cmd);
+                    return;
+                }
+
+                // Not a command click: maybe on a shape
+                const si = hitTestShape(p.x,p.y);
+
+                if(state === 'idle'){
+                    // nothing to do on canvas click when idle
+                    setMessage('Idle - select a command');
+                    return;
+                }
+
+                if(state === 'creating-rect'){
+                    createRectangleAt(p.x,p.y);
+                    state = 'idle';
+                    setVisible(typeRect.el, false);
+                    setVisible(typeCircle.el, false);
+                    setMessage('Created rectangle. Idle.');
+                    return;
+                }
+
+                if(state === 'creating-circle'){
+                    createCircleAt(p.x,p.y);
+                    state = 'idle';
+                    setVisible(typeRect.el, false);
+                    setVisible(typeCircle.el, false);
+                    setMessage('Created circle. Idle.');
+                    return;
+                }
+
+                if(state === 'select-to-move'){
+                    if(si >= 0){
+                        selectedIndex = si;
+                        blinkShape(selectedIndex);
+                        state = 'placing';
+                        setMessage('Selected shape to move — click new location to place');
+                    } else {
+                        setMessage('Select a shape to move');
+                    }
+                    return;
+                }
+
+                if(state === 'placing'){
+                    // place selected shape at p
+                    if(selectedIndex >= 0){
+                        stopBlink(selectedIndex);
+                        moveShapeTo(selectedIndex, p.x, p.y);
+                        setMessage('Shape moved. Idle.');
+                        selectedIndex = -1;
+                        state = 'idle';
+                    } else {
+                        setMessage('No shape selected to place');
+                    }
+                    return;
+                }
+
+                if(state === 'select-to-delete'){
+                    if(si >= 0){
+                        deleteShape(si);
+                        setMessage('Shape deleted. Idle.');
+                        state = 'idle';
+                    } else {
+                        setMessage('Click a shape to delete');
+                    }
+                    return;
+                }
+            }
+
+            function handleCommandClick(cmd){
+                // Identify by comparing element references
+                if(cmd.el === cmdCreate.el){
+                    // toggle visibility of shape type buttons
+                    const visible = typeRect.el.style.display === '';
+                    setVisible(typeRect.el, !visible);
+                    setVisible(typeCircle.el, !visible);
+                    setMessage('Create: choose Rectangle or Circle');
+                    // remain in idle until a type is chosen
+                    state = 'idle';
+                    return;
+                }
+                if(cmd.el === cmdMove.el){
+                    state = 'select-to-move';
+                    setMessage('Move: select a shape to move');
+                    return;
+                }
+                if(cmd.el === cmdDelete.el){
+                    state = 'select-to-delete';
+                    setMessage('Delete: click a shape to delete');
+                    return;
+                }
+                if(cmd.el === typeRect.el){
+                    // begin creating rectangle on next canvas click
+                    state = 'creating-rect';
+                    setMessage('Click on canvas to place rectangle');
+                    // keep types visible until placed or canceled
+                    return;
+                }
+                if(cmd.el === typeCircle.el){
+                    state = 'creating-circle';
+                    setMessage('Click on canvas to place circle');
+                    return;
+                }
+            }
+
+            // Initial small helper shapes to hint creation (optional)
+            // Put a thin separator line under commands
+            const sep = document.createElementNS(SVG_NS,'rect');
+            sep.setAttribute('x', 0);
+            sep.setAttribute('y', 84);
+            sep.setAttribute('width', 1000);
+            sep.setAttribute('height', 1);
+            sep.setAttribute('fill','#ccc');
+            svg.appendChild(sep);
+
+            // Add a small hint text
+            const hint = createText(10, 110, 'Click "Create" then a shape type, then click on canvas to add. Use Move or Delete as commands.');
+            hint.setAttribute('font-size','12');
+            hint.setAttribute('fill','#333');
+
+            // Keep command bboxes up-to-date on resize or scroll
+            window.addEventListener('resize', updateCommandBBoxes);
+            // done
+        })();
+        </script>
 </body>
 </html>
